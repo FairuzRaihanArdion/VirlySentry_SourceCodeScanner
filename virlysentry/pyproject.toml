@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "virlysentry"
+version = "1.0.0"
+description = "VirlySentry - Static Source Code Security Scanner (OWASP Top 10, CVE-pattern, Dead Code Analysis)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Virly Security Engineering" }]
+keywords = ["security", "sast", "owasp", "static-analysis", "vulnerability-scanner", "ci-cd"]
+dependencies = [
+    "PyYAML>=6.0",
+    "colorama>=0.4.6",
+    "jinja2>=3.1.0"
+]
+
+[project.scripts]
+virlysentry = "virlysentry.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["virlysentry*"]
+
+[tool.setuptools.package-data]
+virlysentry = ["config/*.yaml"]
