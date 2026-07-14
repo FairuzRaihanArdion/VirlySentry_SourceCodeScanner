@@ -1,0 +1,21 @@
+version: "1.0.0"
+meta:
+  description: "Custom organization-specific rule extensions for VirlySentry"
+
+settings:
+  default_severity_threshold: LOW
+
+rules:
+  - id: CUSTOM-001
+    name: "Example custom rule: forbidden internal debug flag"
+    category: "Security Misconfiguration"
+    owasp: "A05:2021-Security Misconfiguration"
+    cwe: "CWE-489"
+    severity: MEDIUM
+    languages: [python]
+    extensions: [".py"]
+    pattern: "(?i)INTERNAL_DEBUG\\s*=\\s*True"
+    scenario: "Describe the concrete attack scenario this pattern enables (//custom)."
+    recommendation: "Describe the safe remediation."
+    fixed_example: |
+      INTERNAL_DEBUG = False
