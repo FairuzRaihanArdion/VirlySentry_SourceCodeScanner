@@ -16,9 +16,9 @@ analysis** (unused functions/methods), similar to a linter.
 For every finding, VirlySentry reports:
 
 - **File and exact line/column**
-- **Attack scenario** — what an attacker could realistically do
-- **Recommendation** — how to remediate it
-- **Fixed code example** — a safe replacement snippet
+- **Attack scenario** - what an attacker could realistically do
+- **Recommendation** - how to remediate it
+- **Fixed code example** - a safe replacement snippet
 - **OWASP / CWE mapping**
 
 ## Installation
