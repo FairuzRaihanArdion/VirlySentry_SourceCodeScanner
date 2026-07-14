@@ -28,6 +28,7 @@ git clone https://github.com/FairuzRaihanArdion/VirlySentry_SourceCodeScanner
 cd VirlySentry_SourceCodeScanner
 pip install -r requirements.txt
 pip install .
+virlysentry
 ```
 
 This installs the `virlysentry` command globally (via the `console_scripts`
