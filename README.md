@@ -1,6 +1,6 @@
 # VirlySentry - Source Code Security Checker
 
-<img width="1846" height="1080" alt="example" src="https://github.com/user-attachments/assets/1e89072e-21ab-48ca-8fa3-f25cbe956033" />
+<img width="3692" height="2160" alt="example" src="https://github.com/user-attachments/assets/2d532fc3-32a1-4f5e-88ed-d6c851e36a21" />
 
 What is purpose of this tools?
  -> to scanning source code Web Application before launching, or bug hunting purposes. 
