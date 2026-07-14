@@ -1,18 +1,35 @@
-version: "1.0.0"
+version: "2.0.0"
 meta:
   product: VirlySentry
   description: Default vulnerability signature database for source code scanning
   updated: "2026-07-14"
+  changelog: "v2.0.0: expanded coverage to Java, Go, Ruby, C#/.NET, C; added NoSQL/LDAP/XPath injection, deserialization, TLS misconfig, JWT, SSRF/redirect, ReDoS, Zip Slip, mass assignment, CSRF, clickjacking, and other OWASP Top 10 / CWE Top 25 categories. Severity levels reviewed against exploit prerequisites and impact per internal risk-rating standard (see severity_rubric)."
 
 settings:
   default_severity_threshold: LOW
   max_file_size_kb: 2048
   binary_extensions: [".png", ".jpg", ".jpeg", ".gif", ".ico", ".woff", ".woff2", ".ttf", ".zip", ".pdf", ".exe", ".dll", ".so"]
-  excluded_dirs: [".git", "node_modules", "vendor", "venv", ".venv", "__pycache__", "dist", "build", ".idea", ".vscode", "coverage"]
+  excluded_dirs: [".git", "node_modules", "vendor", "venv", ".venv", "__pycache__", "dist", "build", ".idea", ".vscode", "coverage", "target", "bin", "obj"]
   ignore_inline_marker: "virlysentry:ignore"
 
+# ------------------------------------------------------------------
+# SEVERITY RUBRIC (internal standard — used to justify every rating below)
+# CRITICAL : Unauthenticated or trivially-triggered RCE, full auth bypass,
+#            or direct arbitrary data exfiltration/modification with no
+#            special preconditions.
+# HIGH     : Significant confidentiality/integrity/availability impact,
+#            but requires some precondition (e.g. attacker must reach an
+#            internal-only route, or issue is conditional on config).
+# MEDIUM   : Real security weakness with limited blast radius, requires
+#            chaining with another bug, or mainly affects defense-in-depth.
+# LOW      : Hardening / best-practice gap; exploitability is low or
+#            requires unusual circumstances.
+# INFO     : Not a vulnerability by itself — a pattern that needs human
+#            review because it *could* be a vulnerability in context.
+# ------------------------------------------------------------------
+
 rules:
-  # ---------------- SQL INJECTION ----------------
+  # ================= SQL INJECTION =================
   - id: SQLI-PY-001
     name: "SQL Injection via string formatting (Python)"
     category: Injection
@@ -59,7 +76,148 @@ rules:
     fixed_example: |
       db.query("SELECT * FROM users WHERE id = ?", [id]);
 
-  # ---------------- CROSS-SITE SCRIPTING (XSS) ----------------
+  - id: SQLI-JAVA-001
+    name: "SQL Injection via Statement with concatenated input (Java)"
+    category: Injection
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-89"
+    severity: CRITICAL
+    languages: [java]
+    extensions: [".java"]
+    pattern: |-
+      (?i)createStatement\s*\(\s*\)[\s\S]{0,80}?\.execute(Query|Update)?\s*\(\s*["'][^"']*["']\s*\+
+    scenario: "A java.sql.Statement executes a query string built by concatenating a variable (//sqli), instead of using a PreparedStatement, letting an attacker inject arbitrary SQL through any tainted input reaching the concatenation."
+    recommendation: "Use PreparedStatement with '?' placeholders and setX() bindings instead of Statement with string concatenation."
+    fixed_example: |
+      PreparedStatement ps = conn.prepareStatement("SELECT * FROM users WHERE id = ?");
+      ps.setInt(1, id);
+
+  - id: SQLI-RUBY-001
+    name: "SQL Injection via unsanitized ActiveRecord where clause (Ruby on Rails)"
+    category: Injection
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-89"
+    severity: CRITICAL
+    languages: [ruby]
+    extensions: [".rb"]
+    pattern: |-
+      (?i)\.where\s*\(\s*["'][^"']*#\{
+    scenario: "String interpolation is used inside an ActiveRecord .where() clause (//sqli), bypassing Rails' automatic parameter binding and allowing SQL injection through the interpolated value."
+    recommendation: "Pass values as bind parameters, e.g. Model.where(\"name = ?\", name), instead of interpolating them into the SQL string."
+    fixed_example: |
+      User.where("email = ?", params[:email])
+
+  - id: SQLI-GO-001
+    name: "SQL Injection via fmt.Sprintf query building (Go)"
+    category: Injection
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-89"
+    severity: CRITICAL
+    languages: [go]
+    extensions: [".go"]
+    pattern: |-
+      (?i)(db|conn|tx)\.(Query|QueryRow|Exec)\s*\(\s*fmt\.Sprintf\s*\(
+    scenario: "A SQL statement is assembled at runtime with fmt.Sprintf and passed to database/sql's Query/Exec (//sqli), which means any tainted value formatted into the string can alter query semantics."
+    recommendation: "Use parameterized placeholders ($1, ?) supported natively by database/sql instead of building the query text with fmt.Sprintf."
+    fixed_example: |
+      db.Query("SELECT * FROM users WHERE id = $1", id)
+
+  - id: SQLI-CSHARP-001
+    name: "SQL Injection via concatenated SqlCommand text (C#/.NET)"
+    category: Injection
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-89"
+    severity: CRITICAL
+    languages: [csharp]
+    extensions: [".cs"]
+    pattern: |-
+      (?i)new\s+SqlCommand\s*\(\s*["'][^"']*["']\s*\+
+    scenario: "A SqlCommand is constructed with a query string built via '+' concatenation (//sqli), which allows an attacker-controlled value inserted into the string to change the query's meaning."
+    recommendation: "Use parameterized SqlCommand with SqlParameter objects instead of concatenating values into the SQL text."
+    fixed_example: |
+      var cmd = new SqlCommand("SELECT * FROM Users WHERE Id = @id", conn);
+      cmd.Parameters.AddWithValue("@id", id);
+
+  # ================= NoSQL / LDAP / XPATH INJECTION =================
+  - id: NOSQLI-JS-001
+    name: "NoSQL Injection via unvalidated object passed to MongoDB query (Node.js)"
+    category: Injection
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-943"
+    severity: HIGH
+    languages: [javascript, typescript]
+    extensions: [".js", ".ts"]
+    pattern: |-
+      (?i)\.(find|findOne|update|updateOne|deleteOne)\s*\(\s*(req\.(body|query|params)|request\.(body|query))\s*\)
+    scenario: "A raw request body/query object is passed directly as a MongoDB filter (//nosqli), letting an attacker inject operators such as $ne or $gt to bypass authentication or logic checks."
+    recommendation: "Whitelist and cast expected fields explicitly, and strip/reject keys starting with '$' before building the query object (e.g. with a library like mongo-sanitize)."
+    fixed_example: |
+      const filter = { username: String(req.body.username) };
+      db.collection('users').findOne(filter);
+
+  - id: NOSQLI-PY-001
+    name: "NoSQL Injection via unvalidated dict passed to PyMongo query"
+    category: Injection
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-943"
+    severity: HIGH
+    languages: [python]
+    extensions: [".py"]
+    pattern: |-
+      (?i)\.(find|find_one|update_one|delete_one)\s*\(\s*(request\.(json|args|form))\s*\)
+    scenario: "A Flask/Django request object is passed unmodified as a MongoDB filter (//nosqli), allowing operator injection (e.g. {\"$gt\": \"\"}) that bypasses intended query conditions."
+    recommendation: "Explicitly extract and type-cast each expected field before constructing the MongoDB filter; reject any key beginning with '$'."
+    fixed_example: |
+      filter = {"username": str(request.json.get("username"))}
+      collection.find_one(filter)
+
+  - id: LDAPI-JAVA-001
+    name: "LDAP Injection via unescaped filter concatenation (Java)"
+    category: Injection
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-90"
+    severity: HIGH
+    languages: [java]
+    extensions: [".java"]
+    pattern: |-
+      (?i)search\s*\(\s*[^,]+,\s*["'][^"']*["']\s*\+
+    scenario: "An LDAP search filter is built by concatenating user input into the filter string (//ldapi), allowing an attacker to inject filter metacharacters and alter the query to bypass authentication or dump directory entries."
+    recommendation: "Escape all user-supplied values with a proper LDAP filter encoder before inserting them into the filter, or use a parameterized LDAP query API."
+    fixed_example: |
+      String safeFilter = "(uid=" + Rdn.escapeValue(username) + ")";
+
+  - id: LDAPI-PHP-001
+    name: "LDAP Injection via unescaped filter concatenation (PHP)"
+    category: Injection
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-90"
+    severity: HIGH
+    languages: [php]
+    extensions: [".php"]
+    pattern: |-
+      (?i)ldap_search\s*\([^)]*\$_(GET|POST|REQUEST)
+    scenario: "A raw HTTP parameter flows directly into ldap_search() as part of the filter (//ldapi), which can let an attacker manipulate the LDAP query logic."
+    recommendation: "Escape user input with ldap_escape() before building the filter string."
+    fixed_example: |
+      $safe = ldap_escape($_GET['user'], "", LDAP_ESCAPE_FILTER);
+      ldap_search($conn, $base, "(uid=$safe)");
+
+  - id: XPATHI-001
+    name: "XPath Injection via concatenated expression"
+    category: Injection
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-643"
+    severity: HIGH
+    languages: [java, python, php]
+    extensions: [".java", ".py", ".php"]
+    pattern: |-
+      (?i)(evaluate|xpath_eval|XPath::query)\s*\(\s*["'][^"']*["']\s*\+
+    scenario: "An XPath expression is assembled via string concatenation with user input (//xpathi), which can be abused to bypass authentication checks or extract arbitrary nodes from the XML document."
+    recommendation: "Use parameterized XPath (XPathExpression with variable bindings) instead of building expressions via string concatenation."
+    fixed_example: |
+      // Use XPath variable resolvers instead of concatenating raw values into the expression
+
+  # ================= CROSS-SITE SCRIPTING (XSS) =================
   - id: XSS-JS-001
     name: "DOM-based XSS via innerHTML assignment"
     category: "Cross-Site Scripting"
@@ -122,7 +280,22 @@ rules:
     fixed_example: |
       return render_template("greeting.html", name=request.args.get("name"))
 
-  # ---------------- LOCAL/REMOTE FILE INCLUSION ----------------
+  - id: XSS-JAVA-001
+    name: "Reflected XSS via unescaped response writer output (Java Servlet)"
+    category: "Cross-Site Scripting"
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-79"
+    severity: HIGH
+    languages: [java]
+    extensions: [".java"]
+    pattern: |-
+      (?i)getWriter\(\)\.(print|println|write)\s*\([^)]*getParameter\s*\(
+    scenario: "A servlet writes an HTTP request parameter directly to the response body without encoding (//xss), allowing script injection into the rendered page."
+    recommendation: "HTML-encode any user-supplied value before writing it to the response (e.g. via OWASP Java Encoder: Encode.forHtml())."
+    fixed_example: |
+      out.println(Encode.forHtml(request.getParameter("name")));
+
+  # ================= LOCAL/REMOTE FILE INCLUSION & PATH TRAVERSAL =================
   - id: LFI-PHP-001
     name: "Local File Inclusion via dynamic include/require"
     category: "Broken Access Control"
@@ -158,7 +331,40 @@ rules:
       if not target.startswith(base_dir + os.sep):
           abort(403)
 
-  # ---------------- SERVER-SIDE REQUEST FORGERY ----------------
+  - id: PATHTRAV-JAVA-001
+    name: "Path Traversal via unsanitized File/Paths construction (Java)"
+    category: "Broken Access Control"
+    owasp: "A01:2021-Broken Access Control"
+    cwe: "CWE-22"
+    severity: HIGH
+    languages: [java]
+    extensions: [".java"]
+    pattern: |-
+      (?i)new\s+File\s*\([^)]*getParameter\s*\(
+    scenario: "A java.io.File is constructed directly from an HTTP request parameter (//path-traversal), which allows directory traversal sequences to read or write files outside the intended directory."
+    recommendation: "Canonicalize the resulting path and verify it is still within the intended base directory before use (File.getCanonicalPath() + prefix check)."
+    fixed_example: |
+      File base = new File("/var/app/uploads").getCanonicalFile();
+      File target = new File(base, fileName).getCanonicalFile();
+      if (!target.getPath().startsWith(base.getPath())) throw new SecurityException();
+
+  - id: ZIPSLIP-001
+    name: "Zip Slip: archive extraction without path validation"
+    category: "Broken Access Control"
+    owasp: "A01:2021-Broken Access Control"
+    cwe: "CWE-22"
+    severity: HIGH
+    languages: [java, python, javascript, typescript]
+    extensions: [".java", ".py", ".js", ".ts"]
+    pattern: |-
+      (?i)(ZipEntry|zipfile\.ZipFile|yauzl|unzipper)[\s\S]{0,120}?(extract|getName\(\)|\.write\s*\()
+    scenario: "Entries from an untrusted ZIP/TAR archive are extracted using their embedded name without validating for '../' sequences (//zip-slip), allowing a malicious archive to write files outside the target extraction directory."
+    recommendation: "Resolve each entry's destination path, canonicalize it, and reject any entry whose resolved path escapes the intended output directory before writing it to disk."
+    fixed_example: |
+      Path resolved = outputDir.resolve(entry.getName()).normalize();
+      if (!resolved.startsWith(outputDir)) throw new IOException("Bad zip entry");
+
+  # ================= SERVER-SIDE REQUEST FORGERY =================
   - id: SSRF-PY-001
     name: "SSRF via unsanitized outbound request URL"
     category: "SSRF"
@@ -192,7 +398,39 @@ rules:
       if (!isAllowedHost(new URL(url).hostname)) throw new Error("blocked host");
       await axios.get(url);
 
-  # ---------------- COMMAND INJECTION ----------------
+  - id: SSRF-JAVA-001
+    name: "SSRF via RestTemplate/HttpClient with user-supplied URL (Java)"
+    category: "SSRF"
+    owasp: "A10:2021-Server-Side Request Forgery"
+    cwe: "CWE-918"
+    severity: HIGH
+    languages: [java]
+    extensions: [".java"]
+    pattern: |-
+      (?i)(restTemplate\.(getForObject|postForObject|exchange)|HttpClient[\s\S]{0,40}?newRequest)\s*\(\s*getParameter\s*\(
+    scenario: "An outbound HTTP call target is built directly from a request parameter (//ssrf), allowing an attacker to redirect the server's request to internal-only endpoints such as cloud metadata services."
+    recommendation: "Validate the destination against an allow-list of hosts and block requests to private/reserved IP ranges before the call is made."
+    fixed_example: |
+      if (!allowedHosts.contains(url.getHost())) throw new SecurityException("blocked host");
+
+  - id: SSRF-REDIRECT-001
+    name: "SSRF via unvalidated redirect target (Open Redirect used server-side)"
+    category: "SSRF"
+    owasp: "A10:2021-Server-Side Request Forgery"
+    cwe: "CWE-601"
+    severity: MEDIUM
+    languages: [python, javascript, typescript, php, java]
+    extensions: [".py", ".js", ".ts", ".php", ".java"]
+    pattern: |-
+      (?i)(redirect|sendRedirect|header\s*\(\s*["']Location)\s*\(?\s*["']?\s*\+?\s*(request\.(args|form|GET|POST)|req\.(query|body)|\$_(GET|POST|REQUEST))
+    scenario: "The redirect destination is taken directly from user input (//open-redirect), which attackers can abuse for phishing (redirecting through a trusted domain) or, in server-side contexts, to trigger further SSRF."
+    recommendation: "Validate the redirect target against an allow-list of internal paths or trusted domains before issuing the redirect."
+    fixed_example: |
+      allowed = {"/dashboard", "/profile"}
+      target = next_url if next_url in allowed else "/dashboard"
+      return redirect(target)
+
+  # ================= COMMAND INJECTION =================
   - id: CMDI-PY-001
     name: "OS Command Injection via os.system/subprocess shell=True"
     category: "Injection"
@@ -239,7 +477,52 @@ rules:
     fixed_example: |
       execFile("convert", [inputPath, outputPath]);
 
-  # ---------------- INSECURE DESERIALIZATION ----------------
+  - id: CMDI-JAVA-001
+    name: "OS Command Injection via Runtime.exec/ProcessBuilder with shell wrapper"
+    category: "Injection"
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-78"
+    severity: CRITICAL
+    languages: [java]
+    extensions: [".java"]
+    pattern: |-
+      (?i)Runtime\.getRuntime\(\)\.exec\s*\(\s*["']?(/bin/sh|sh|cmd(\.exe)?)\b.*(-c|/c)
+    scenario: "A command is executed through a shell wrapper (sh -c / cmd /c) built from a concatenated string (//rce), allowing shell metacharacters in any tainted input to chain arbitrary commands."
+    recommendation: "Use ProcessBuilder with a fixed executable and an explicit argument array, avoiding the shell wrapper entirely."
+    fixed_example: |
+      new ProcessBuilder("ping", "-c", "1", host).start();
+
+  - id: CMDI-GO-001
+    name: "OS Command Injection via exec.Command with shell string (Go)"
+    category: "Injection"
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-78"
+    severity: CRITICAL
+    languages: [go]
+    extensions: [".go"]
+    pattern: |-
+      (?i)exec\.Command\s*\(\s*["'](/bin/sh|sh|bash)["']\s*,\s*["']-c["']
+    scenario: "A shell (sh -c) is invoked with a command string that embeds external input (//rce), which allows shell metacharacters to be injected and chained into arbitrary command execution."
+    recommendation: "Call exec.Command with the target binary and explicit argument list directly, without going through a shell interpreter."
+    fixed_example: |
+      exec.Command("ping", "-c", "1", host).Run()
+
+  - id: CMDI-RUBY-001
+    name: "OS Command Injection via system/backticks/%x with interpolation (Ruby)"
+    category: "Injection"
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-78"
+    severity: CRITICAL
+    languages: [ruby]
+    extensions: [".rb"]
+    pattern: |-
+      (?i)(`[^`]*#\{|%x\{[^}]*#\{|system\s*\(\s*["'][^"']*#\{)
+    scenario: "A shell command is built via string interpolation and executed with backticks, %x{}, or system() (//rce), letting attacker-controlled input inject shell metacharacters."
+    recommendation: "Pass arguments as a separate array to system()/Open3.capture2() instead of interpolating them into a single shell string."
+    fixed_example: |
+      system("ping", "-c", "1", host)
+
+  # ================= INSECURE DESERIALIZATION =================
   - id: DESER-PY-001
     name: "Insecure Deserialization via pickle.loads on untrusted data"
     category: "Insecure Deserialization"
@@ -285,15 +568,61 @@ rules:
     fixed_example: |
       $data = json_decode($_POST['payload'], true);
 
-  # ---------------- WEAK CRYPTOGRAPHY / SECRETS ----------------
+  - id: DESER-JAVA-001
+    name: "Insecure Deserialization via ObjectInputStream.readObject on untrusted data"
+    category: "Insecure Deserialization"
+    owasp: "A08:2021-Software and Data Integrity Failures"
+    cwe: "CWE-502"
+    severity: CRITICAL
+    languages: [java]
+    extensions: [".java"]
+    pattern: |-
+      (?i)new\s+ObjectInputStream\s*\([\s\S]{0,80}?\)\s*\.\s*readObject\s*\(\)
+    scenario: "Native Java deserialization is applied to a byte stream (//deser); if that stream can be influenced by an attacker, a crafted object graph using known gadget chains (e.g. Commons Collections) can achieve remote code execution."
+    recommendation: "Avoid native Java deserialization for untrusted data. Use a safe data format such as JSON, or a look-ahead deserialization filter (ObjectInputFilter) restricted to an allow-list of classes."
+    fixed_example: |
+      ObjectInputFilter filter = ObjectInputFilter.Config.createFilter("com.app.dto.*;!*");
+      ois.setObjectInputFilter(filter);
+
+  - id: DESER-RUBY-001
+    name: "Insecure Deserialization via Marshal.load on untrusted data (Ruby)"
+    category: "Insecure Deserialization"
+    owasp: "A08:2021-Software and Data Integrity Failures"
+    cwe: "CWE-502"
+    severity: CRITICAL
+    languages: [ruby]
+    extensions: [".rb"]
+    pattern: |-
+      (?i)Marshal\.load\s*\(
+    scenario: "Marshal.load reconstructs arbitrary Ruby objects from a byte stream (//deser); a crafted payload from an untrusted source can trigger remote code execution via known gadget chains."
+    recommendation: "Never Marshal.load data from an untrusted source. Use JSON for data interchange, or Psych.safe_load for YAML."
+    fixed_example: |
+      data = JSON.parse(payload)
+
+  - id: DESER-CSHARP-001
+    name: "Insecure Deserialization via BinaryFormatter (.NET)"
+    category: "Insecure Deserialization"
+    owasp: "A08:2021-Software and Data Integrity Failures"
+    cwe: "CWE-502"
+    severity: CRITICAL
+    languages: [csharp]
+    extensions: [".cs"]
+    pattern: |-
+      (?i)new\s+BinaryFormatter\s*\(\s*\)[\s\S]{0,60}?\.Deserialize\s*\(
+    scenario: "BinaryFormatter.Deserialize is used on a data stream (//deser); Microsoft has documented this type as inherently unsafe for untrusted input because crafted payloads can execute arbitrary code during deserialization."
+    recommendation: "Migrate away from BinaryFormatter entirely; use System.Text.Json or a serializer that does not support type instantiation from the payload."
+    fixed_example: |
+      var data = JsonSerializer.Deserialize<MyDto>(json);
+
+  # ================= WEAK CRYPTOGRAPHY / SECRETS =================
   - id: CRYPTO-001
     name: "Use of weak hash algorithm for password storage"
     category: "Cryptographic Failures"
     owasp: "A02:2021-Cryptographic Failures"
     cwe: "CWE-327"
     severity: HIGH
-    languages: [python, php, javascript, typescript]
-    extensions: [".py", ".php", ".js", ".ts"]
+    languages: [python, php, javascript, typescript, java]
+    extensions: [".py", ".php", ".js", ".ts", ".java"]
     pattern: |-
       (?i)(md5|sha1)\s*\([^)]*(password|passwd|pwd|secret)
     scenario: "MD5/SHA-1 are fast, unsalted, and considered cryptographically broken for password hashing (//weak-crypto), making offline brute-force and rainbow-table attacks practical."
@@ -307,8 +636,8 @@ rules:
     owasp: "A02:2021-Cryptographic Failures"
     cwe: "CWE-798"
     severity: CRITICAL
-    languages: [python, php, javascript, typescript, generic]
-    extensions: [".py", ".php", ".js", ".ts", ".env", ".yaml", ".yml", ".json"]
+    languages: [python, php, javascript, typescript, java, go, ruby, csharp, generic]
+    extensions: [".py", ".php", ".js", ".ts", ".java", ".go", ".rb", ".cs", ".env", ".yaml", ".yml", ".json"]
     pattern: |-
       (?i)(api[_-]?key|secret[_-]?key|access[_-]?token|aws_secret_access_key|private_key)\s*[:=]\s*["''][A-Za-z0-9/\+_\-]{16,}["'']
     scenario: "A credential or API key is hardcoded directly in source (//hardcoded-secret), exposing it to anyone with repository access and to CI/CD logs, forks, or leaked artifacts."
@@ -331,7 +660,53 @@ rules:
     fixed_example: |
       token = secrets.token_urlsafe(32)
 
-  # ---------------- XXE ----------------
+  - id: CRYPTO-JAVA-001
+    name: "Use of java.util.Random for security-sensitive tokens"
+    category: "Cryptographic Failures"
+    owasp: "A02:2021-Cryptographic Failures"
+    cwe: "CWE-338"
+    severity: MEDIUM
+    languages: [java]
+    extensions: [".java"]
+    pattern: |-
+      (?i)new\s+Random\s*\(\s*\)[\s\S]{0,60}?(token|session|password|otp|reset)
+    scenario: "java.util.Random uses a predictable linear-congruential algorithm (//weak-random); an attacker who observes some outputs can predict future tokens generated for sessions, passwords, or OTPs."
+    recommendation: "Use java.security.SecureRandom for any value with a security purpose."
+    fixed_example: |
+      SecureRandom random = new SecureRandom();
+
+  - id: CRYPTO-TLS-001
+    name: "TLS certificate verification disabled"
+    category: "Cryptographic Failures"
+    owasp: "A02:2021-Cryptographic Failures"
+    cwe: "CWE-295"
+    severity: HIGH
+    languages: [python, javascript, typescript, java]
+    extensions: [".py", ".js", ".ts", ".java"]
+    pattern: |-
+      (?i)(verify\s*=\s*False|rejectUnauthorized\s*:\s*false|NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*['"]0['"]|trustAllCerts|X509TrustManager\(\)\s*\{)
+    scenario: "TLS/SSL certificate validation is explicitly disabled (//tls-verify-disabled), which allows a man-in-the-middle attacker to intercept and tamper with traffic that the application believes is protected by HTTPS."
+    recommendation: "Never disable certificate verification in production. If a custom CA is needed, load it into the trust store instead of bypassing validation entirely."
+    fixed_example: |
+      requests.get(url, verify=True)  # or verify="/path/to/custom-ca.pem"
+
+  - id: CRYPTO-TLS-002
+    name: "Obsolete/weak TLS protocol version explicitly configured"
+    category: "Cryptographic Failures"
+    owasp: "A02:2021-Cryptographic Failures"
+    cwe: "CWE-326"
+    severity: MEDIUM
+    languages: [python, javascript, typescript, java, generic]
+    extensions: [".py", ".js", ".ts", ".java", ".conf", ".yaml", ".yml"]
+    pattern: |-
+      (?i)(SSLv2|SSLv3|TLSv1\.0|TLSv1\.1|PROTOCOL_SSLv3|PROTOCOL_TLSv1\b)
+    scenario: "The application explicitly pins a deprecated TLS/SSL protocol version (//weak-tls) known to be vulnerable to attacks such as POODLE or BEAST, weakening transport confidentiality even if the rest of the TLS config is sound."
+    recommendation: "Configure a minimum of TLS 1.2, preferably TLS 1.3, and remove any explicit downgrade to older protocol versions."
+    fixed_example: |
+      context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+      context.minimum_version = ssl.TLSVersion.TLSv1_2
+
+  # ================= XXE =================
   - id: XXE-PY-001
     name: "XML External Entity (XXE) via unsafe XML parser"
     category: "XXE"
@@ -364,7 +739,37 @@ rules:
       libxml_disable_entity_loader(true);
       $xml = simplexml_load_string($data);
 
-  # ---------------- SECURITY MISCONFIGURATION ----------------
+  - id: XXE-JAVA-001
+    name: "XXE via DocumentBuilderFactory without secure processing"
+    category: "XXE"
+    owasp: "A05:2021-Security Misconfiguration"
+    cwe: "CWE-611"
+    severity: HIGH
+    languages: [java]
+    extensions: [".java"]
+    pattern: |-
+      (?i)DocumentBuilderFactory\.newInstance\s*\(\s*\)(?!.{0,300}(FEATURE_SECURE_PROCESSING|setExpandEntityReferences\s*\(\s*false\s*\)|disallow-doctype-decl))
+    scenario: "DocumentBuilderFactory is instantiated without disabling DOCTYPE/external entity processing (//xxe), leaving the parser vulnerable to XXE payloads that read local files, perform SSRF, or cause denial of service via entity expansion."
+    recommendation: "Explicitly disable DTDs and external entities on the factory before parsing any untrusted XML."
+    fixed_example: |
+      dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+
+  - id: XXE-CSHARP-001
+    name: "XXE via XmlDocument with default resolver (.NET)"
+    category: "XXE"
+    owasp: "A05:2021-Security Misconfiguration"
+    cwe: "CWE-611"
+    severity: HIGH
+    languages: [csharp]
+    extensions: [".cs"]
+    pattern: |-
+      (?i)new\s+XmlDocument\s*\(\s*\)(?!.{0,200}XmlResolver\s*=\s*null)
+    scenario: "An XmlDocument is created without setting XmlResolver to null (//xxe), which on older .NET Framework versions allows external entity resolution and can lead to local file disclosure or SSRF."
+    recommendation: "Set XmlResolver to null (or use XmlReaderSettings with DtdProcessing.Prohibit) before loading untrusted XML."
+    fixed_example: |
+      var doc = new XmlDocument { XmlResolver = null };
+
+  # ================= SECURITY MISCONFIGURATION =================
   - id: MISCONF-FLASK-001
     name: "Flask application running with debug mode enabled"
     category: "Security Misconfiguration"
@@ -410,6 +815,23 @@ rules:
     fixed_example: |
       response.headers["Access-Control-Allow-Origin"] = "https://trusted.example.com"
 
+  - id: MISCONF-CORS-002
+    name: "CORS wildcard origin combined with credentials allowed"
+    category: "Security Misconfiguration"
+    owasp: "A05:2021-Security Misconfiguration"
+    cwe: "CWE-942"
+    severity: HIGH
+    languages: [python, javascript, typescript, php]
+    extensions: [".py", ".js", ".ts", ".php"]
+    pattern: |-
+      (?i)Access-Control-Allow-Credentials\s*[:=]\s*["']?true["']?[\s\S]{0,200}?Access-Control-Allow-Origin\s*[:=]\s*["']?\*
+    scenario: "Allow-Credentials:true is paired with a wildcard Allow-Origin (//cors-credentials-wildcard); while most browsers reject this exact combination, misconfigured proxies or reflected-origin logic can effectively recreate it, letting any origin make authenticated requests and read the response, including session cookies' effects."
+    recommendation: "Never combine wildcard origins with credentialed CORS. Reflect only an explicitly allow-listed origin when Allow-Credentials is true."
+    fixed_example: |
+      if origin in ALLOWED_ORIGINS:
+          response.headers["Access-Control-Allow-Origin"] = origin
+          response.headers["Access-Control-Allow-Credentials"] = "true"
+
   - id: MISCONF-COOKIE-001
     name: "Session cookie missing Secure/HttpOnly flags"
     category: "Security Misconfiguration"
@@ -425,7 +847,52 @@ rules:
     fixed_example: |
       res.cookie("session_id", token, { httpOnly: true, secure: true, sameSite: "strict" });
 
-  # ---------------- SSTI (generic Jinja2) ----------------
+  - id: MISCONF-COOKIE-002
+    name: "SameSite=None cookie without Secure flag"
+    category: "Security Misconfiguration"
+    owasp: "A05:2021-Security Misconfiguration"
+    cwe: "CWE-1275"
+    severity: MEDIUM
+    languages: [javascript, typescript, python, php]
+    extensions: [".js", ".ts", ".py", ".php"]
+    pattern: |-
+      (?i)SameSite\s*[:=]\s*["']?None["']?(?!.{0,60}Secure)
+    scenario: "SameSite=None is set without the Secure attribute (//samesite-none-insecure); modern browsers reject such cookies, but the misconfiguration usually signals the cookie is unintentionally exposed to cross-site contexts without adequate transport protection."
+    recommendation: "Always pair SameSite=None with Secure, and confirm cross-site cookie use is actually required before relaxing SameSite."
+    fixed_example: |
+      res.cookie("token", value, { sameSite: "none", secure: true });
+
+  - id: MISCONF-CSP-001
+    name: "Missing or overly permissive Content-Security-Policy"
+    category: "Security Misconfiguration"
+    owasp: "A05:2021-Security Misconfiguration"
+    cwe: "CWE-1021"
+    severity: LOW
+    languages: [javascript, typescript, python, php, generic]
+    extensions: [".js", ".ts", ".py", ".php", ".conf"]
+    pattern: |-
+      (?i)Content-Security-Policy[^\n]*(unsafe-inline|unsafe-eval|\*)
+    scenario: "The Content-Security-Policy header allows unsafe-inline, unsafe-eval, or a wildcard source (//weak-csp), which significantly weakens CSP's ability to mitigate XSS by permitting inline or arbitrary-origin script execution."
+    recommendation: "Remove unsafe-inline/unsafe-eval and scope each directive to an explicit list of trusted origins; use nonces or hashes for any necessary inline scripts."
+    fixed_example: |
+      Content-Security-Policy: script-src 'self' 'nonce-<random>'
+
+  - id: MISCONF-CLICKJACK-001
+    name: "Missing clickjacking protection (X-Frame-Options / frame-ancestors)"
+    category: "Security Misconfiguration"
+    owasp: "A05:2021-Security Misconfiguration"
+    cwe: "CWE-1021"
+    severity: LOW
+    languages: [python, javascript, typescript, php, java, generic]
+    extensions: [".py", ".js", ".ts", ".php", ".java", ".conf"]
+    pattern: |-
+      (?i)(X-Frame-Options|frame-ancestors)
+    scenario: "This signature flags files where X-Frame-Options or a CSP frame-ancestors directive is referenced; confirm one of them is actually being *set* on every HTML response (//clickjacking) — its absence lets an attacker embed the page in a hidden iframe and trick users into clicking UI elements."
+    recommendation: "Set X-Frame-Options: DENY (or SAMEORIGIN) and/or Content-Security-Policy: frame-ancestors 'none' on all HTML responses that don't need to be framed."
+    fixed_example: |
+      response.headers["X-Frame-Options"] = "DENY"
+
+  # ================= SSTI (generic Jinja2 / other engines) =================
   - id: SSTI-PY-002
     name: "Server-Side Template Injection via string-built template"
     category: "Injection"
@@ -442,24 +909,85 @@ rules:
       template = env.get_template("page.html")
       template.render(name=request.args.get("name"))
 
-  # ---------------- BROKEN ACCESS CONTROL ----------------
+  - id: SSTI-JAVA-001
+    name: "Spring Expression Language (SpEL) Injection"
+    category: "Injection"
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-917"
+    severity: CRITICAL
+    languages: [java]
+    extensions: [".java"]
+    pattern: |-
+      (?i)(new\s+SpelExpressionParser\(\)|ExpressionParser)[\s\S]{0,120}?\.parseExpression\s*\([^)]*getParameter\s*\(
+    scenario: "A Spring Expression Language string built from an HTTP request parameter is parsed and evaluated (//ssti), which allows an attacker to inject arbitrary SpEL expressions and typically achieve remote code execution."
+    recommendation: "Never evaluate SpEL expressions built from untrusted input. If dynamic expressions are required, use a restricted SimpleEvaluationContext with a strict allow-list."
+    fixed_example: |
+      // Avoid evaluating user-supplied strings as SpEL at all; use fixed, pre-defined expressions only.
+
+  # ================= BROKEN ACCESS CONTROL =================
   - id: ACCESS-001
     name: "Missing authentication/authorization check before sensitive action"
     category: "Broken Access Control"
     owasp: "A01:2021-Broken Access Control"
     cwe: "CWE-862"
     severity: INFO
-    languages: [python, javascript, typescript, php]
-    extensions: [".py", ".js", ".ts", ".php"]
+    languages: [python, javascript, typescript, php, java, go, ruby, csharp]
+    extensions: [".py", ".js", ".ts", ".php", ".java", ".go", ".rb", ".cs"]
     pattern: |-
-      (?i)(def|function)\s+(delete|remove|admin|update)_?\w*\s*\(
+      (?i)(def|function|func|public\s+\w+)\s+(delete|remove|admin|update)_?\w*\s*\(
     scenario: "A function performing a destructive or administrative action was found; confirm it enforces an authentication/authorization check before executing (//access-control), otherwise it may allow privilege escalation or unauthorized data modification."
     recommendation: "Add an explicit authorization check (role/permission verification) at the top of the handler before performing the sensitive operation."
     fixed_example: |
       if not current_user.has_permission("delete_resource"):
           abort(403)
 
-  # ---------------- VULNERABLE COMPONENTS / EVAL ----------------
+  - id: MASSASSIGN-001
+    name: "Mass Assignment via unfiltered request body bound to model"
+    category: "Broken Access Control"
+    owasp: "A01:2021-Broken Access Control"
+    cwe: "CWE-915"
+    severity: MEDIUM
+    languages: [ruby, javascript, typescript, java, csharp]
+    extensions: [".rb", ".js", ".ts", ".java", ".cs"]
+    pattern: |-
+      (?i)(\.create\s*\(\s*(params|req\.body)\s*\)|\.update\s*\(\s*(params|req\.body)\s*\)|Model\.new\s*\(\s*params\s*\))
+    scenario: "A full, unfiltered request body/params object is bound directly onto a model's create/update call (//mass-assignment), which lets an attacker set fields that were never intended to be user-controllable, such as 'role' or 'is_admin'."
+    recommendation: "Explicitly whitelist the permitted attributes (e.g. Rails strong parameters, or a DTO with only the intended fields) before passing data into the model."
+    fixed_example: |
+      user.update(permitted_params.slice(:name, :email))
+
+  - id: IDOR-001
+    name: "Potential Insecure Direct Object Reference via ID from request without ownership check"
+    category: "Broken Access Control"
+    owasp: "A01:2021-Broken Access Control"
+    cwe: "CWE-639"
+    severity: INFO
+    languages: [python, javascript, typescript, php, java, ruby]
+    extensions: [".py", ".js", ".ts", ".php", ".java", ".rb"]
+    pattern: |-
+      (?i)(find|findById|find_by_id|get)\s*\(\s*(request\.(args|params)|req\.params|\$_(GET|POST))
+    scenario: "A record is fetched using an identifier taken directly from the request (//idor); confirm the handler also verifies the current user actually owns or is authorized to access that specific record, otherwise any authenticated user could enumerate and access other users' data."
+    recommendation: "After loading the record, explicitly check that it belongs to (or is otherwise accessible by) the requesting user before returning or modifying it."
+    fixed_example: |
+      record = Order.find(order_id)
+      abort(403) unless record.user_id == current_user.id
+
+  - id: CSRF-001
+    name: "State-changing route without apparent CSRF token verification"
+    category: "Broken Access Control"
+    owasp: "A01:2021-Broken Access Control"
+    cwe: "CWE-352"
+    severity: MEDIUM
+    languages: [python, php, java]
+    extensions: [".py", ".php", ".java"]
+    pattern: |-
+      (?i)@(app\.route|PostMapping|RequestMapping)\([^)]*method[s]?\s*=\s*\[?["']?(POST|PUT|DELETE)
+    scenario: "A state-changing (POST/PUT/DELETE) endpoint was found; confirm the framework's CSRF protection is enabled for it (//csrf), otherwise an attacker can trick an authenticated user's browser into submitting the request from a malicious page."
+    recommendation: "Enable and require CSRF token validation on all state-changing routes (e.g. Flask-WTF CSRFProtect, Spring Security CSRF, or a custom double-submit cookie)."
+    fixed_example: |
+      csrf = CSRFProtect(app)  # Flask-WTF, enabled globally
+
+  # ================= INJECTION VIA EVAL/CODE EXECUTION =================
   - id: EVAL-JS-001
     name: "Use of eval() / Function constructor on dynamic input"
     category: "Injection"
@@ -491,6 +1019,37 @@ rules:
       import ast
       value = ast.literal_eval(user_input)
 
+  - id: PROTOPOLLUTION-001
+    name: "Prototype Pollution via unguarded deep merge of user input"
+    category: "Injection"
+    owasp: "A03:2021-Injection"
+    cwe: "CWE-1321"
+    severity: HIGH
+    languages: [javascript, typescript]
+    extensions: [".js", ".ts"]
+    pattern: |-
+      (?i)(_\.merge|deepmerge|Object\.assign)\s*\(\s*[^,]+,\s*(req\.(body|query)|JSON\.parse)
+    scenario: "A deep-merge utility combines an application object with an untrusted, attacker-controlled object (//prototype-pollution); a payload containing '__proto__' can pollute Object.prototype, potentially leading to denial of service or, in some code paths, remote code execution."
+    recommendation: "Use a merge utility with prototype-pollution protection (or a version patched against it), and explicitly strip/reject '__proto__', 'constructor', and 'prototype' keys from untrusted input before merging."
+    fixed_example: |
+      const safeInput = sanitizeKeys(req.body);
+      const merged = _.merge({}, defaults, safeInput);
+
+  - id: REDOS-001
+    name: "Potential Regular Expression Denial of Service (ReDoS) pattern"
+    category: "Denial of Service"
+    owasp: "A05:2021-Security Misconfiguration"
+    cwe: "CWE-1333"
+    severity: MEDIUM
+    languages: [javascript, typescript, python, php, java]
+    extensions: [".js", ".ts", ".py", ".php", ".java"]
+    pattern: |-
+      (\([^()]*[+*]\)[+*]|\([^()]*[+*][^()]*\|[^()]*[+*]\)[+*])
+    scenario: "A regular expression contains nested quantifiers or overlapping alternation with repetition (//redos), a pattern known to cause catastrophic backtracking; a crafted input string can make matching take exponential time and exhaust CPU on a single request."
+    recommendation: "Rewrite the regex to avoid nested/ambiguous quantifiers, add an input length cap before matching, or use a non-backtracking regex engine (e.g. RE2) for untrusted input."
+    fixed_example: |
+      // Rewrite (a+)+ style patterns to a single bounded quantifier, e.g. a{1,100}
+
   - id: VULN-DEP-001
     name: "Known-vulnerable dependency version pinned"
     category: "Vulnerable and Outdated Components"
@@ -505,3 +1064,160 @@ rules:
     recommendation: "Upgrade the dependency to a patched version and enable automated dependency scanning (e.g. Dependabot/Snyk) in CI/CD."
     fixed_example: |
       "lodash": "^4.17.21"
+
+  # ================= AUTHENTICATION / SESSION / JWT =================
+  - id: JWT-001
+    name: "JWT verification accepts 'none' algorithm or skips signature check"
+    category: "Identification and Authentication Failures"
+    owasp: "A07:2021-Identification and Authentication Failures"
+    cwe: "CWE-347"
+    severity: CRITICAL
+    languages: [javascript, typescript, python, php, java]
+    extensions: [".js", ".ts", ".py", ".php", ".java"]
+    pattern: |-
+      (?i)(algorithms\s*[:=]\s*\[?\s*["']none["']|verify\s*=\s*False|jwt\.decode\s*\([^)]*verify_signature['"]?\s*:\s*False)
+    scenario: "The JWT verification logic allows the 'none' algorithm or explicitly disables signature verification (//jwt-none), which lets an attacker forge a token with arbitrary claims (e.g. an admin role) that the server will accept as valid."
+    recommendation: "Explicitly whitelist the expected signing algorithm(s) (e.g. RS256) on every verify call and never accept 'none' or skip signature verification."
+    fixed_example: |
+      jwt.decode(token, key, algorithms=["RS256"])
+
+  - id: JWT-002
+    name: "Hardcoded JWT signing secret"
+    category: "Identification and Authentication Failures"
+    owasp: "A07:2021-Identification and Authentication Failures"
+    cwe: "CWE-321"
+    severity: CRITICAL
+    languages: [javascript, typescript, python, php, java]
+    extensions: [".js", ".ts", ".py", ".php", ".java"]
+    pattern: |-
+      (?i)jwt\.(sign|encode)\s*\([^)]*["'][A-Za-z0-9_\-!@#$%^&*]{8,}["']
+    scenario: "A JWT is signed using a secret literal embedded in source code (//hardcoded-jwt-secret); anyone with source access can forge arbitrary valid tokens, including ones with elevated privileges."
+    recommendation: "Load the signing secret/key from an environment variable or secrets manager, and use an asymmetric algorithm (RS256/ES256) where feasible so the verification key differs from the signing key."
+    fixed_example: |
+      const token = jwt.sign(payload, process.env.JWT_SECRET, { algorithm: "HS256" });
+
+  - id: AUTH-DEFAULTCREDS-001
+    name: "Hardcoded default administrative credentials"
+    category: "Identification and Authentication Failures"
+    owasp: "A07:2021-Identification and Authentication Failures"
+    cwe: "CWE-798"
+    severity: CRITICAL
+    languages: [python, javascript, typescript, php, java, generic]
+    extensions: [".py", ".js", ".ts", ".php", ".java", ".yaml", ".yml", ".json", ".env"]
+    pattern: |-
+      (?i)(username|user)\s*[:=]\s*["']admin["'][\s\S]{0,80}?(password|passwd|pwd)\s*[:=]\s*["'](admin|password|123456|changeme)["']
+    scenario: "A default admin/admin-style credential pair is hardcoded in source or config (//default-creds), which is one of the most commonly exploited weaknesses in automated attacks and internet-wide scanning."
+    recommendation: "Remove default credentials entirely; require an administrator to set a strong password on first run, and enforce this via a setup flow rather than a shipped default."
+    fixed_example: |
+      # Force password set on first boot instead of shipping a default value
+
+  - id: AUTH-RATELIMIT-001
+    name: "Authentication endpoint without apparent rate limiting"
+    category: "Identification and Authentication Failures"
+    owasp: "A07:2021-Identification and Authentication Failures"
+    cwe: "CWE-307"
+    severity: MEDIUM
+    languages: [python, javascript, typescript, php, java]
+    extensions: [".py", ".js", ".ts", ".php", ".java"]
+    pattern: |-
+      (?i)@(app\.route|PostMapping)\s*\(\s*["'][^"']*(login|signin|authenticate)[^"']*["']
+    scenario: "A login/authentication route was found; confirm it is protected by rate limiting or account lockout (//brute-force), otherwise it is susceptible to credential-stuffing and brute-force password guessing attacks."
+    recommendation: "Apply rate limiting (per-IP and per-account) and progressive delays or lockouts to authentication endpoints, and consider CAPTCHA after repeated failures."
+    fixed_example: |
+      @limiter.limit("5 per minute")
+      @app.route("/login", methods=["POST"])
+
+  - id: HOSTHEADER-001
+    name: "Host header used to build absolute URLs without validation"
+    category: "Security Misconfiguration"
+    owasp: "A05:2021-Security Misconfiguration"
+    cwe: "CWE-644"
+    severity: MEDIUM
+    languages: [python, javascript, typescript, php, java]
+    extensions: [".py", ".js", ".ts", ".php", ".java"]
+    pattern: |-
+      (?i)(request\.host|req\.headers\.host|\$_SERVER\['HTTP_HOST'\]|getHeader\s*\(\s*["']Host["']\s*\))[\s\S]{0,80}?(password.?reset|reset.?link|http)
+    scenario: "The Host header is trusted and used to build an absolute URL, e.g. inside a password-reset email (//host-header-injection); an attacker can send a request with a forged Host header, causing the generated link to point to an attacker-controlled domain and capture reset tokens from victims."
+    recommendation: "Use a fixed, server-side-configured base URL for generating links instead of trusting the incoming Host header."
+    fixed_example: |
+      reset_link = f"{settings.APP_BASE_URL}/reset?token={token}"
+
+  # ================= FILE UPLOAD =================
+  - id: UPLOAD-001
+    name: "File upload without extension/content-type validation"
+    category: "Security Misconfiguration"
+    owasp: "A05:2021-Security Misconfiguration"
+    cwe: "CWE-434"
+    severity: HIGH
+    languages: [python, javascript, typescript, php, java]
+    extensions: [".py", ".js", ".ts", ".php", ".java"]
+    pattern: |-
+      (?i)(save|move_uploaded_file|writeFile|multer\(\s*\{)[\s\S]{0,60}?(request\.files|\$_FILES|req\.file)
+    scenario: "An uploaded file is saved to disk without apparent validation of its extension, MIME type, or content (//unrestricted-upload); an attacker can upload an executable script (e.g. a .php or .jsp web shell) into a web-accessible directory and achieve remote code execution."
+    recommendation: "Validate the file's extension and actual content type against an allow-list, store uploads outside the web root (or with execution disabled), and rename files to a generated identifier rather than trusting the client-supplied filename."
+    fixed_example: |
+      if not filename.lower().endswith((".png", ".jpg", ".pdf")):
+          abort(400)
+      safe_name = f"{uuid.uuid4()}{ext}"
+
+  # ================= C / NATIVE MEMORY SAFETY =================
+  - id: MEMSAFE-C-001
+    name: "Use of unsafe C string function prone to buffer overflow"
+    category: "Memory Safety"
+    owasp: "A06:2021-Vulnerable and Outdated Components"
+    cwe: "CWE-120"
+    severity: HIGH
+    languages: [c, cpp]
+    extensions: [".c", ".cpp", ".h", ".hpp"]
+    pattern: |-
+      (?i)\b(strcpy|strcat|gets|sprintf)\s*\(
+    scenario: "An unbounded C string function is used (//buffer-overflow); if the source data can exceed the destination buffer's size, this can corrupt adjacent memory and, in the worst case, allow arbitrary code execution via stack/heap overwrite."
+    recommendation: "Use bounded equivalents (strncpy, strncat, fgets, snprintf) and always pass the destination buffer size explicitly."
+    fixed_example: |
+      snprintf(dest, sizeof(dest), "%s", src);
+
+  - id: MEMSAFE-C-002
+    name: "Format string vulnerability via non-literal format argument"
+    category: "Memory Safety"
+    owasp: "A06:2021-Vulnerable and Outdated Components"
+    cwe: "CWE-134"
+    severity: HIGH
+    languages: [c, cpp]
+    extensions: [".c", ".cpp"]
+    pattern: |-
+      (?i)\bprintf\s*\(\s*[a-zA-Z_]\w*\s*\)
+    scenario: "printf() (or a variant) is called with a variable as the format string instead of a literal (//format-string), so if that variable's value is attacker-controlled it can be used to leak stack memory or, via %n, write arbitrary memory."
+    recommendation: "Always use a constant format string, passing the variable as an argument instead: printf(\"%s\", var)."
+    fixed_example: |
+      printf("%s", user_supplied_string);
+
+  # ================= GraphQL / API =================
+  - id: GRAPHQL-INTROSPECTION-001
+    name: "GraphQL introspection enabled without environment check"
+    category: "Security Misconfiguration"
+    owasp: "A05:2021-Security Misconfiguration"
+    cwe: "CWE-200"
+    severity: LOW
+    languages: [javascript, typescript, python]
+    extensions: [".js", ".ts", ".py"]
+    pattern: |-
+      (?i)introspection\s*:\s*true
+    scenario: "GraphQL introspection is explicitly enabled (//graphql-introspection); in a production deployment this lets any client enumerate the entire schema, including internal-only types, fields, and mutations, which aids an attacker in mapping the API's attack surface."
+    recommendation: "Disable introspection in production environments, gating it behind an environment-variable check (enabled only in development)."
+    fixed_example: |
+      introspection: process.env.NODE_ENV !== "production"
+
+  - id: GRAPHQL-DEPTHLIMIT-001
+    name: "GraphQL server without apparent query depth/complexity limiting"
+    category: "Denial of Service"
+    owasp: "A05:2021-Security Misconfiguration"
+    cwe: "CWE-770"
+    severity: MEDIUM
+    languages: [javascript, typescript, python]
+    extensions: [".js", ".ts", ".py"]
+    pattern: |-
+      (?i)new\s+(ApolloServer|GraphQLSchema)\s*\(
+    scenario: "A GraphQL server is instantiated; confirm query depth/complexity limiting is configured (//graphql-dos), otherwise a deeply nested or highly repetitive query can force the server to perform exponential work and exhaust resources."
+    recommendation: "Add a query complexity/depth-limiting validation rule (e.g. graphql-depth-limit, graphql-cost-analysis) to reject excessively expensive queries."
+    fixed_example: |
+      validationRules: [depthLimit(6)]
