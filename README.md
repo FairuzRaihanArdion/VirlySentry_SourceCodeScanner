@@ -24,6 +24,8 @@ For every finding, VirlySentry reports:
 ## Installation
 
 ```bash
+git clone https://github.com/FairuzRaihanArdion/VirlySentry_SourceCodeScanner
+cd VirlySentry_SourceCodeScanner
 pip install -r requirements.txt
 pip install .
 ```
@@ -152,9 +154,5 @@ Pass a custom file with `--config path.yaml` to append/override rules, or
 | Vulnerable/Outdated Components       | A06           | VULN-DEP-001                           |
 | Dead Code (unused functions/classes) | Code Quality  | N/A (AST-based, not a YAML rule)       |
 
-## Running Tests
 
-```bash
-pip install pytest
-pytest tests/
-```
+
