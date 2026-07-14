@@ -55,9 +55,6 @@ virlysentry scan ./my-website --severity MEDIUM
 # Fail the CI/CD pipeline only on CRITICAL findings
 virlysentry scan ./my-website --fail-on CRITICAL
 
-# Exclude vendor/test directories
-virlysentry scan ./my-website --exclude "vendor/*" --exclude "tests/*"
-
 # Extend the rule set with your own organization rules
 virlysentry scan ./my-website --config ./virlysentry-custom-rules.yaml
 
