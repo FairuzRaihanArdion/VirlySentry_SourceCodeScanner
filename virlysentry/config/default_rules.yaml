@@ -12,22 +12,6 @@ settings:
   excluded_dirs: [".git", "node_modules", "vendor", "venv", ".venv", "__pycache__", "dist", "build", ".idea", ".vscode", "coverage", "target", "bin", "obj"]
   ignore_inline_marker: "virlysentry:ignore"
 
-# ------------------------------------------------------------------
-# SEVERITY RUBRIC (internal standard — used to justify every rating below)
-# CRITICAL : Unauthenticated or trivially-triggered RCE, full auth bypass,
-#            or direct arbitrary data exfiltration/modification with no
-#            special preconditions.
-# HIGH     : Significant confidentiality/integrity/availability impact,
-#            but requires some precondition (e.g. attacker must reach an
-#            internal-only route, or issue is conditional on config).
-# MEDIUM   : Real security weakness with limited blast radius, requires
-#            chaining with another bug, or mainly affects defense-in-depth.
-# LOW      : Hardening / best-practice gap; exploitability is low or
-#            requires unusual circumstances.
-# INFO     : Not a vulnerability by itself — a pattern that needs human
-#            review because it *could* be a vulnerability in context.
-# ------------------------------------------------------------------
-
 rules:
   # ================= SQL INJECTION =================
   - id: SQLI-PY-001
